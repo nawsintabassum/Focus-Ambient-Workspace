@@ -1,0 +1,26 @@
+import {useCallback,useEffect,useRef,useState} from 'react';
+import type {Sound} from '../types';
+type Track={sound:Sound;volume:number;muted:boolean};
+const toneMap:Record<string,{freq:number;type:OscillatorType;noise?:boolean;filter?:number}> = {
+ rain:{freq:180,type:'sawtooth',noise:true,filter:900},waves:{freq:75,type:'sine',noise:true,filter:350},forest:{freq:1700,type:'sine',noise:true,filter:2400},waterfall:{freq:110,type:'sawtooth',noise:true,filter:1000},wind:{freq:65,type:'sine',noise:true,filter:260},birds:{freq:2200,type:'sine',filter:4200},coffee:{freq:240,type:'triangle',noise:true,filter:700},library:{freq:120,type:'sine',noise:true,filter:280},fire:{freq:90,type:'triangle',noise:true,filter:800},city:{freq:95,type:'sawtooth',noise:true,filter:380},train:{freq:70,type:'sawtooth',noise:true,filter:240},white:{freq:1000,type:'sine',noise:true,filter:9000},brown:{freq:55,type:'sine',noise:true,filter:220},pink:{freq:350,type:'sine',noise:true,filter:1800},space:{freq:48,type:'sine',filter:180},drone:{freq:110,type:'triangle',filter:700},piano:{freq:262,type:'sine',filter:1800},lofi:{freq:196,type:'triangle',noise:true,filter:1600},synth:{freq:174,type:'sawtooth',filter:900},bowl:{freq:432,type:'sine',filter:1600},windowrain:{freq:420,type:'sawtooth',noise:true,filter:1200},crickets:{freq:2500,type:'sine',noise:true,filter:5000},underwater:{freq:82,type:'sine',noise:true,filter:220},dream:{freq:330,type:'sine',filter:1200}
+};
+export function useAmbient(){
+ const [active,setActive]=useState<Track[]>([]),[master,setMaster]=useState(85);
+ const ctx=useRef<AudioContext|null>(null),nodes=useRef<Map<string,{gain:GainNode;osc:OscillatorNode[];source?:AudioBufferSourceNode;media?:HTMLAudioElement;mediaSource?:MediaElementAudioSourceNode;filter:BiquadFilterNode}>>(new Map());
+ const ensure=()=>{if(!ctx.current)ctx.current=new AudioContext();if(ctx.current.state==='suspended')void ctx.current.resume();return ctx.current;};
+ const stopNode=(id:string)=>{const n=nodes.current.get(id);if(!n)return;try{n.osc.forEach(o=>o.stop());if(n.source)n.source.stop();if(n.media){n.media.pause();n.media.src='';}if(n.mediaSource)n.mediaSource.disconnect();}catch{};try{n.gain.disconnect();n.filter.disconnect();}catch{}nodes.current.delete(id);};
+ const startNode=(track:Track)=>{const c=ensure();if(nodes.current.has(track.sound.id))return;const isGenerated=track.sound.audioUrl.startsWith('generated:');const key=track.sound.audioUrl.replace('generated:','');const cfg=toneMap[key]||toneMap.dream;const gain=c.createGain();gain.gain.value=(track.muted?0:track.volume/100)*(master/100);const filter=c.createBiquadFilter();filter.type='lowpass';filter.frequency.value=cfg.filter||1200;filter.connect(gain);gain.connect(c.destination);const osc:OscillatorNode[]=[];
+ if(!isGenerated){const media=new Audio(track.sound.audioUrl);media.loop=true;const mediaSource=c.createMediaElementSource(media);mediaSource.connect(filter);void media.play().catch(()=>{});nodes.current.set(track.sound.id,{gain,osc,media,mediaSource,filter});return;}
+ if(cfg.noise){const len=c.sampleRate*3;const buffer=c.createBuffer(1,len,c.sampleRate);const data=buffer.getChannelData(0);let last=0;for(let i=0;i<len;i++){const white=Math.random()*2-1;last=(last+0.02*white)/1.02;data[i]=key==='brown'?last*3.5:key==='pink'?last*5:white;}const src=c.createBufferSource();src.buffer=buffer;src.loop=true;src.connect(filter);src.start();nodes.current.set(track.sound.id,{gain,osc,source:src,filter});}
+ else {const o=c.createOscillator();o.type=cfg.type;o.frequency.value=cfg.freq;o.connect(filter);o.start();osc.push(o);if(['piano','lofi','synth','dream','bowl'].includes(key)){const o2=c.createOscillator();o2.type='sine';o2.frequency.value=cfg.freq*1.5;o2.detune.value=-8;o2.connect(filter);o2.start();osc.push(o2);}nodes.current.set(track.sound.id,{gain,osc,filter});}
+ };
+ const play=useCallback((sound:Sound,volume=55)=>{setActive(old=>{const found=old.find(t=>t.sound.id===sound.id);if(found){if(!nodes.current.has(sound.id))startNode(found);return old;}const next=[...old,{sound,volume,muted:false}];startNode(next[next.length-1]);return next;});},[master]);
+ const pause=useCallback((id:string)=>{stopNode(id);},[]);
+ const remove=useCallback((id:string)=>{stopNode(id);setActive(old=>old.filter(t=>t.sound.id!==id));},[]);
+ const setVolume=useCallback((id:string,volume:number)=>{setActive(old=>old.map(t=>t.sound.id===id?{...t,volume}:t));const n=nodes.current.get(id);if(n)n.gain.gain.value=(volume/100)*(master/100);},[master]);
+ const mute=useCallback((id:string)=>{setActive(old=>old.map(t=>{if(t.sound.id!==id)return t;const muted=!t.muted;const n=nodes.current.get(id);if(n)n.gain.gain.value=(muted?0:t.volume/100)*(master/100);return {...t,muted};}));},[master]);
+ const setMasterVolume=useCallback((v:number)=>{setMaster(v);for(const t of active){const n=nodes.current.get(t.sound.id);if(n)n.gain.gain.value=(t.muted?0:t.volume/100)*(v/100);}},[active]);
+ const stopAll=useCallback(()=>{[...nodes.current.keys()].forEach(stopNode);setActive([]);},[]);
+ useEffect(()=>()=>{[...nodes.current.keys()].forEach(stopNode);void ctx.current?.close();},[]);
+ return {active,master,setMasterVolume,play,pause,remove,setVolume,mute,stopAll,isPlaying:(id:string)=>nodes.current.has(id)};
+}
